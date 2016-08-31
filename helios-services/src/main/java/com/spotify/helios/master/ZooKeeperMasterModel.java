@@ -68,6 +68,7 @@ import com.spotify.helios.servicescommon.coordination.ZooKeeperClient;
 import com.spotify.helios.servicescommon.coordination.ZooKeeperClientProvider;
 import com.spotify.helios.servicescommon.coordination.ZooKeeperOperation;
 
+import com.google.common.collect.Sets;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.KeeperException.NoNodeException;
 import org.apache.zookeeper.KeeperException.NodeExistsException;
@@ -81,6 +82,7 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -524,6 +526,27 @@ public class ZooKeeperMasterModel implements MasterModel {
         ImmutableList<Map<String, Object>> events = ImmutableList.of();
 
         if (deploymentGroup.getJobId() != null) {
+          // Undeploy job from hosts that are no longer part of the DG
+          final Sets.SetView<String> removedHosts =
+              Sets.difference(new HashSet<>(curHosts), new HashSet<>(hosts));
+          for (final String removedHost : removedHosts) {
+            try {
+              final List<ZooKeeperOperation> undeployOperations =
+                  getUndeployOperations(client, removedHost, deploymentGroup.getJobId(),
+                                        deploymentGroup.getRolloutOptions().getToken());
+              ops.addAll(undeployOperations);
+            } catch (JobNotDeployedException ignored) {
+              // If it's not deployed, we don't need to undeploy it.
+            } catch (HostNotFoundException ignored) {
+              // If the host cannot be found (it was deregistered/decomissioned), there's nothing
+              // to undeploy.
+            } catch (TokenVerificationException e) {
+              log.warn("updateDeploymentGroupHosts: Failed to undeploy job from host {}, " +
+                       "which no longer matches the host selectors",
+                       removedHost, e);
+            }
+          }
+
           if (updateOnHostChange(deploymentGroup, status)) {
             deploymentGroup = deploymentGroup.toBuilder()
                 .setRollingUpdateReason(HOSTS_CHANGED)
